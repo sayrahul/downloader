@@ -1,0 +1,13 @@
+{
+  "last_url": "https://ser3.masahub.cc/myfiless/id/68000.mp4",
+  "start_id": "68000",
+  "end_id": "68999",
+  "step": "1",
+  "max_size": "200",
+  "workers": "10",
+  "threads": "6",
+  "chunk_kb": "1024",
+  "range_mode": "sequence",
+  "silent_mode": false,
+  "output_dir": "downloaded_videos"
+}
