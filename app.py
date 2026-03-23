@@ -16,6 +16,13 @@ ctk.set_default_color_theme("blue")
 
 UI_POLL_MS = 120
 MAX_VISIBLE_ROWS = 160
+PROFILE_LABELS = {
+    "max_size_mb": "Largest file to keep (MB)",
+    "workers": "Files at the same time",
+    "threads": "Speed boost per file",
+    "chunk_kb": "Data block size (KB)",
+    "timeout_seconds": "Wait time before retry (sec)",
+}
 
 
 class ProventureStudio(ctk.CTk):
@@ -38,6 +45,7 @@ class ProventureStudio(ctk.CTk):
         self.active = False
         self.is_paused = False
         self.current_stats = {}
+        self.current_stats_started = 0.0
 
         self.setup_ui()
         self.apply_settings_to_form()
@@ -102,18 +110,22 @@ class ProventureStudio(ctk.CTk):
         config_right.grid(row=0, column=1, padx=(10, 0), pady=10, sticky="nsew")
         config_right.grid_columnconfigure(1, weight=1)
 
-        ctk.CTkLabel(config_right, text="Performance Profile", font=ctk.CTkFont(size=17, weight="bold"), text_color="#ff9d9d").grid(
+        ctk.CTkLabel(config_right, text="Download Setup", font=ctk.CTkFont(size=17, weight="bold"), text_color="#ff9d9d").grid(
             row=0, column=0, columnspan=2, padx=18, pady=(16, 12), sticky="w"
         )
-        self.size_entry = self._labeled_entry(config_right, 1, "Max Size (MB)")
-        self.workers_entry = self._labeled_entry(config_right, 2, "Connections")
-        self.threads_entry = self._labeled_entry(config_right, 3, "Threads / File")
-        self.chunk_entry = self._labeled_entry(config_right, 4, "Chunk KB")
-        self.timeout_entry = self._labeled_entry(config_right, 5, "Timeout Sec")
+        self.size_entry = self._labeled_entry(config_right, 1, PROFILE_LABELS["max_size_mb"])
+        self.workers_entry = self._labeled_entry(config_right, 2, PROFILE_LABELS["workers"])
+        self.threads_entry = self._labeled_entry(config_right, 3, PROFILE_LABELS["threads"])
+        self.chunk_entry = self._labeled_entry(config_right, 4, PROFILE_LABELS["chunk_kb"])
+        self.timeout_entry = self._labeled_entry(config_right, 5, PROFILE_LABELS["timeout_seconds"])
         self.silent_var = ctk.BooleanVar(value=False)
         self.cleanup_var = ctk.BooleanVar(value=True)
-        ctk.CTkCheckBox(config_right, text="Silent UI mode", variable=self.silent_var).grid(row=6, column=0, padx=18, pady=(8, 16), sticky="w")
-        ctk.CTkCheckBox(config_right, text="Clean stale partials", variable=self.cleanup_var).grid(row=6, column=1, padx=18, pady=(8, 16), sticky="e")
+        ctk.CTkCheckBox(config_right, text="Keep the list calm while running", variable=self.silent_var).grid(
+            row=6, column=0, padx=18, pady=(8, 16), sticky="w"
+        )
+        ctk.CTkCheckBox(config_right, text="Remove unfinished old pieces first", variable=self.cleanup_var).grid(
+            row=6, column=1, padx=18, pady=(8, 16), sticky="e"
+        )
 
         dashboard = ctk.CTkFrame(tab, corner_radius=14, fg_color="#191f24")
         dashboard.grid(row=1, column=0, columnspan=2, pady=(4, 10), sticky="nsew")
@@ -232,8 +244,16 @@ class ProventureStudio(ctk.CTk):
             raise ValueError("Step must be greater than zero.")
         if settings.start_id > settings.end_id:
             raise ValueError("Start ID must be less than or equal to End ID.")
-        if settings.workers < 1 or settings.threads < 1 or settings.chunk_kb < 64:
-            raise ValueError("Connections, threads, and chunk KB must be positive.")
+        if settings.max_size_mb <= 0:
+            raise ValueError(f"{PROFILE_LABELS['max_size_mb']} must be greater than zero.")
+        if settings.workers < 1:
+            raise ValueError(f"{PROFILE_LABELS['workers']} must be at least 1.")
+        if settings.threads < 1:
+            raise ValueError(f"{PROFILE_LABELS['threads']} must be at least 1.")
+        if settings.chunk_kb < 64:
+            raise ValueError(f"{PROFILE_LABELS['chunk_kb']} must be at least 64.")
+        if settings.timeout_seconds < 5:
+            raise ValueError(f"{PROFILE_LABELS['timeout_seconds']} must be at least 5.")
 
         base_url = settings.base_url
         if "{}" not in base_url:
@@ -267,6 +287,10 @@ class ProventureStudio(ctk.CTk):
             self.run_status.configure(text=str(exc), text_color="#fbbf24")
             self.log_inspector(f"Validation error: {exc}")
             return
+        except Exception as exc:
+            self.run_status.configure(text=f"Failed to prepare run: {exc}", text_color="#f87171")
+            self.log_inspector(f"Unexpected setup error: {exc}")
+            return
 
         self.storage.save_settings(self.settings)
         if self.settings.cleanup_before_run:
@@ -274,6 +298,7 @@ class ProventureStudio(ctk.CTk):
 
         self.active = True
         self.is_paused = False
+        self.current_stats = {"total": len(job.ids), "processed": 0, "success": 0, "skipped": 0, "failed": 0, "retries": 0, "bytes_downloaded": 0, "started_at": time.time()}
         self.tree.delete(*self.tree.get_children())
         self.tree_items.clear()
         self.start_btn.configure(state="disabled")
@@ -284,7 +309,9 @@ class ProventureStudio(ctk.CTk):
         self.progress_label.configure(text=f"Progress: 0.0% (0 / {len(job.ids)})")
         self.eta_label.configure(text="ETA: --")
         self.run_status.configure(text="Run started.", text_color="#7dd3fc")
-        self.log_inspector(f"Run started with {len(job.ids)} IDs, {job.workers} workers, {job.threads} threads/file.")
+        self.log_inspector(
+            f"Run started with {len(job.ids)} IDs, {job.workers} files at once, {job.threads} speed lanes per file."
+        )
         self.engine.start(job, self.settings)
 
     def toggle_pause(self):
@@ -327,7 +354,10 @@ class ProventureStudio(ctk.CTk):
             self.current_stats = payload
             self.refresh_runtime()
         elif event_type == "bytes":
-            pass
+            self.current_stats["bytes_downloaded"] = self.current_stats.get("bytes_downloaded", 0) + payload.get("count", 0)
+            if "started_at" not in self.current_stats:
+                self.current_stats["started_at"] = time.time()
+            self.refresh_runtime()
         elif event_type == "run_finished":
             self.finish_run(payload["cancelled"], payload["errors"])
 
@@ -426,10 +456,14 @@ class ProventureStudio(ctk.CTk):
         file_path = filedialog.askopenfilename(filetypes=[("Text files", "*.txt"), ("All files", "*.*")])
         if not file_path:
             return
-        with open(file_path, "r", encoding="utf-8") as file_obj:
-            self.proxies = [line.strip() for line in file_obj if line.strip()]
-        self.run_status.configure(text=f"Loaded {len(self.proxies)} proxies.", text_color="#93c5fd")
-        self.log_inspector(f"Loaded proxies from {file_path}")
+        try:
+            with open(file_path, "r", encoding="utf-8") as file_obj:
+                self.proxies = [line.strip() for line in file_obj if line.strip()]
+            self.run_status.configure(text=f"Loaded {len(self.proxies)} proxies.", text_color="#93c5fd")
+            self.log_inspector(f"Loaded proxies from {file_path}")
+        except OSError as exc:
+            self.run_status.configure(text=f"Proxy load failed: {exc}", text_color="#f87171")
+            self.log_inspector(f"Proxy load failed: {exc}")
 
     def select_output_dir(self):
         selected = filedialog.askdirectory(initialdir=str(Path(self.settings.output_dir).resolve()))

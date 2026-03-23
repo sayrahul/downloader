@@ -35,12 +35,14 @@ class DownloadEngine:
         self.run_context = RunContext(status_cache=self.storage.load_known_status_cache())
         self.proxy_pool = []
         self.settings_snapshot = None
+        self.current_run_label = ""
 
     def start(self, job: DownloadJob, settings_snapshot):
         self.cancel_event.clear()
         self.pause_event.set()
         self.stats = RuntimeStats(total=len(job.ids), started_at=time.time())
         self.settings_snapshot = settings_snapshot
+        self.current_run_label = job.run_label
         self.proxy_pool = [ProxyEndpoint(raw=value) for value in getattr(self.app, "proxies", [])]
         run_label = f"{job.ids[0]}-{job.ids[-1]}" if job.ids else "empty"
         self.run_context = RunContext(
@@ -94,24 +96,31 @@ class DownloadEngine:
         )
 
         async with aiohttp.ClientSession(connector=connector, timeout=timeout, trust_env=False) as session:
-            semaphore = asyncio.Semaphore(job.workers)
-            tasks = [asyncio.create_task(self._bounded_process(session, semaphore, video_id, job)) for video_id in job.ids]
+            job_queue = asyncio.Queue()
+            for video_id in job.ids:
+                await job_queue.put(video_id)
+            worker_count = max(1, min(job.workers, len(job.ids) or 1))
+            tasks = [asyncio.create_task(self._worker_loop(session, job_queue, job)) for _ in range(worker_count)]
             results = await asyncio.gather(*tasks, return_exceptions=True)
 
         errors = sum(1 for item in results if isinstance(item, Exception))
         await self._finish_run(errors)
 
-    async def _bounded_process(self, session, semaphore, video_id: int, job: DownloadJob):
-        async with semaphore:
+    async def _worker_loop(self, session, job_queue: asyncio.Queue, job: DownloadJob):
+        while not self.cancel_event.is_set():
+            try:
+                video_id = job_queue.get_nowait()
+            except asyncio.QueueEmpty:
+                return
+
             self.stats.active_files += 1
             self.app.emit_event("runtime", self.stats.__dict__.copy())
             try:
-                if self.cancel_event.is_set():
-                    return
                 result = await self._process_video(session, video_id, job)
                 if result:
                     self._apply_result(result)
             finally:
+                job_queue.task_done()
                 self.stats.active_files = max(self.stats.active_files - 1, 0)
                 self.app.emit_event("runtime", self.stats.__dict__.copy())
 
@@ -136,6 +145,9 @@ class DownloadEngine:
             return DownloadResult(video_id, "skipped", "Skipped: over limit", size_mb, retries_used)
         if final_path.exists() and (probe.size == 0 or final_path.stat().st_size == probe.size):
             return DownloadResult(video_id, "skipped", "Skipped: already downloaded", size_mb, retries_used)
+        if tmp_path.exists() and probe.size and tmp_path.stat().st_size == probe.size:
+            os.replace(tmp_path, final_path)
+            return DownloadResult(video_id, "success", "Recovered temp file", size_mb, retries_used, probe.size)
 
         try:
             if probe.supports_ranges and probe.size >= MIN_SPLIT_SIZE and job.threads > 1:
@@ -179,12 +191,12 @@ class DownloadEngine:
     async def _download_single(self, session, url, tmp_path, expected_size, headers, proxy, job, video_id):
         existing_size = tmp_path.stat().st_size if tmp_path.exists() else 0
         retries = 0
-        mode = "ab" if existing_size else "wb"
         if expected_size and existing_size and existing_size < expected_size:
             headers = headers.copy()
             headers["Range"] = f"bytes={existing_size}-"
         else:
             existing_size = 0
+        mode = "ab" if existing_size else "wb"
 
         self.app.emit_event("item_status", {"video_id": video_id, "status": "Downloading", "size_mb": self._size_label(expected_size)})
         async with aiofiles.open(tmp_path, mode) as file_obj:
@@ -202,6 +214,7 @@ class DownloadEngine:
                         return bytes_written, retries
                     await file_obj.write(chunk)
                     bytes_written += len(chunk)
+                    self.stats.bytes_downloaded += len(chunk)
                     self.app.emit_event("bytes", {"count": len(chunk)})
                 return bytes_written, retries
 
@@ -266,6 +279,7 @@ class DownloadEngine:
                         return bytes_written, retries
                     await file_obj.write(chunk)
                     bytes_written += len(chunk)
+                    self.stats.bytes_downloaded += len(chunk)
                     self.app.emit_event("bytes", {"count": len(chunk)})
                 return bytes_written, retries
 
@@ -311,7 +325,7 @@ class DownloadEngine:
         record = HistoryRecord(
             started_at=datetime.fromtimestamp(self.stats.started_at).isoformat(timespec="seconds"),
             finished_at=finished_at,
-            run_label=self.settings_snapshot.base_url,
+            run_label=self.current_run_label,
             total=self.stats.total,
             success=self.stats.success,
             skipped=self.stats.skipped,
@@ -328,7 +342,6 @@ class DownloadEngine:
 
     def _apply_result(self, result: DownloadResult):
         self.stats.processed += 1
-        self.stats.bytes_downloaded += result.bytes_written
         if result.result == "success":
             self.stats.success += 1
         elif result.result == "skipped":

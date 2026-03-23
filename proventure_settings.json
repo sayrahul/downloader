@@ -1,13 +1,15 @@
 {
-  "last_url": "https://ser3.masahub.cc/myfiless/id/68000.mp4",
-  "start_id": "68000",
-  "end_id": "68999",
-  "step": "1",
-  "max_size": "200",
-  "workers": "10",
-  "threads": "6",
-  "chunk_kb": "1024",
+  "base_url": "https://ser3.masahub.cc/myfiless/id/68420.mp4",
+  "output_dir": "downloaded_videos",
+  "start_id": 0,
+  "end_id": 70000,
+  "step": 1,
   "range_mode": "sequence",
-  "silent_mode": false,
-  "output_dir": "downloaded_videos"
+  "max_size_mb": 100.0,
+  "workers": 10,
+  "threads": 10,
+  "chunk_kb": 1024,
+  "silent_mode": true,
+  "cleanup_before_run": true,
+  "timeout_seconds": 20
 }
