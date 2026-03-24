@@ -7,3 +7,7 @@ __pycache__/
 .DS_Store
 downloaded_videos/
 proventure_state.db
+proventure_state.db-journal
+proventure_state.db-wal
+proventure_state.db-shm
+proventure_active_run.json
