@@ -18,11 +18,11 @@ class AppSettings:
     timeout_seconds: int = 20
     auto_tune: bool = True
     verify_downloads: bool = True
-    skip_known_missing: bool = True
+    skip_known_missing: bool = False
     retry_failed_only: bool = False
     silent_mode: bool = False
-    cleanup_before_run: bool = True
-    unsafe_ssl: bool = False
+    cleanup_before_run: bool = False
+    unsafe_ssl: bool = True
     history_limit: int = 50
 
 
@@ -39,11 +39,11 @@ class DownloadJob:
     performance_preset: str = "balanced"
     auto_tune: bool = True
     verify_downloads: bool = True
-    skip_known_missing: bool = True
+    skip_known_missing: bool = False
     retry_failed_only: bool = False
     silent_mode: bool = False
-    clean_before_run: bool = True
-    unsafe_ssl: bool = False
+    clean_before_run: bool = False
+    unsafe_ssl: bool = True
     max_retries: int = 2
     run_label: str = ""
 

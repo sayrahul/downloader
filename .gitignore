@@ -11,3 +11,5 @@ proventure_state.db-journal
 proventure_state.db-wal
 proventure_state.db-shm
 proventure_active_run.json
+build/
+dist/

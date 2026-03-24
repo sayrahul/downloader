@@ -1,8 +1,10 @@
+import hashlib
 import queue
 import re
 import time
 from pathlib import Path
 from tkinter import filedialog, ttk
+from urllib.parse import urlparse
 
 import customtkinter as ctk
 
@@ -253,11 +255,11 @@ class ProventureStudio(ctk.CTk):
             threads=int(self.threads_entry.get().strip() or "6"),
             chunk_kb=int(self.chunk_entry.get().strip() or "1024"),
             auto_tune=True,
-            verify_downloads=False,
+            verify_downloads=True,
             skip_known_missing=False,
             retry_failed_only=False,
             silent_mode=False,
-            cleanup_before_run=True,
+            cleanup_before_run=False,
             unsafe_ssl=True,
             timeout_seconds=int(self.timeout_entry.get().strip() or "20"),
             history_limit=max(10, self.settings.history_limit),
@@ -309,7 +311,7 @@ class ProventureStudio(ctk.CTk):
             silent_mode=settings.silent_mode,
             clean_before_run=settings.cleanup_before_run,
             unsafe_ssl=settings.unsafe_ssl,
-            run_label=f"{ids[0]}-{ids[-1]}" if ids else "empty",
+            run_label=f"{self._source_key(base_url)}:{ids[0]}-{ids[-1]}" if ids else f"{self._source_key(base_url)}:empty",
         )
 
     def on_preset_change(self, _value):
@@ -637,6 +639,12 @@ class ProventureStudio(ctk.CTk):
         if minutes:
             return f"{minutes}m {sec}s"
         return f"{sec}s"
+
+    def _source_key(self, base_url: str) -> str:
+        parsed = urlparse(base_url)
+        host = (parsed.netloc or "source").lower().replace(".", "_").replace(":", "_")
+        digest = hashlib.sha1(base_url.encode("utf-8")).hexdigest()[:8]
+        return f"{host}_{digest}"
 
 
 if __name__ == "__main__":

@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import math
 import os
 import random
@@ -7,9 +8,12 @@ import time
 from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import urlparse
 
 import aiofiles
 import aiohttp
+import requests
+import urllib3
 
 from models import DownloadJob, DownloadResult, FileProbe, HistoryRecord, ProxyEndpoint, RunContext, RuntimeStats, TuningProfile
 
@@ -26,6 +30,13 @@ USER_AGENTS = [
 RETRYABLE_STATUSES = {408, 409, 425, 429, 500, 502, 503, 504}
 PROBE_MAX_RETRIES = 1
 DOWNLOAD_MAX_RETRIES = 2
+RESULT_BATCH_SIZE = 100
+RESULT_FLUSH_INTERVAL = 1.5
+ADAPT_RETRY_THRESHOLD = 8
+ADAPT_FAILURE_THRESHOLD = 6
+
+
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 
 class DownloadEngine:
@@ -43,11 +54,14 @@ class DownloadEngine:
         self.settings_snapshot = None
         self.current_run_label = ""
         self.result_batch = []
-        self.batch_size = 25
+        self.batch_size = RESULT_BATCH_SIZE
         self.tuning_profile = TuningProfile(workers=1, threads=1, chunk_kb=1024, reason="default")
         self.job_ids = []
         self.remaining_ids = set()
         self.last_runtime_emit = 0.0
+        self.last_batch_flush = 0.0
+        self.dynamic_threads = 1
+        self.source_profile = {"range_failures": 0, "probe_failures": 0, "fallback_successes": 0, "fallback_failures": 0}
 
     def start(self, job: DownloadJob, settings_snapshot):
         self.cancel_event.clear()
@@ -59,11 +73,15 @@ class DownloadEngine:
         self.job_ids = list(job.ids)
         self.remaining_ids = set(job.ids)
         self.last_runtime_emit = 0.0
+        self.last_batch_flush = time.monotonic()
+        self.dynamic_threads = 1
+        self.source_profile = {"range_failures": 0, "probe_failures": 0, "fallback_successes": 0, "fallback_failures": 0}
 
         self.tuning_profile = self._build_tuning_profile(job)
         job.workers = self.tuning_profile.workers
         job.threads = self.tuning_profile.threads
         job.chunk_size = self.tuning_profile.chunk_kb * 1024
+        self.dynamic_threads = job.threads
 
         self.stats = RuntimeStats(
             total=len(job.ids),
@@ -172,8 +190,8 @@ class DownloadEngine:
 
         url = job.base_url.format(video_id)
         save_dir = Path(job.save_dir)
-        final_path = save_dir / f"video_{video_id}.mp4"
-        tmp_path = save_dir / f"video_{video_id}.mp4.tmp"
+        final_path = self._final_path(save_dir, job.base_url, video_id)
+        tmp_path = self._temp_path(save_dir, job.base_url, video_id)
         headers = {"User-Agent": random.choice(USER_AGENTS)}
         proxy = self._pick_proxy()
 
@@ -193,9 +211,10 @@ class DownloadEngine:
             return DownloadResult(video_id, "success", "Recovered temp file", size_mb, retries_used, probe.size, probe.status, probe.content_type)
 
         try:
-            if probe.supports_ranges and probe.size >= MIN_SPLIT_SIZE and job.threads > 1:
+            effective_threads = self._effective_threads(job, probe)
+            if probe.supports_ranges and probe.size >= MIN_SPLIT_SIZE and effective_threads > 1:
                 bytes_written, extra_retries = await self._download_multi_part(
-                    session, url, final_path, probe.size, headers, proxy, job, video_id
+                    session, url, final_path, probe.size, headers, proxy, job, video_id, effective_threads
                 )
             else:
                 bytes_written, extra_retries = await self._download_single(
@@ -220,6 +239,29 @@ class DownloadEngine:
                 probe.content_type,
             )
         except Exception as exc:
+            fallback_bytes = await asyncio.to_thread(
+                self._download_via_requests,
+                video_id,
+                url,
+                save_dir,
+                probe,
+                headers,
+                proxy,
+                job,
+            )
+            if fallback_bytes:
+                self.source_profile["fallback_successes"] += 1
+                return DownloadResult(
+                    video_id,
+                    "success",
+                    "Complete (fallback)",
+                    size_mb,
+                    retries_used + 1,
+                    fallback_bytes,
+                    probe.status,
+                    probe.content_type,
+                )
+            self.source_profile["fallback_failures"] += 1
             self._cleanup_partial_files(save_dir, video_id)
             return DownloadResult(
                 video_id,
@@ -262,7 +304,11 @@ class DownloadEngine:
                     return FileProbe(True, size, supports_ranges, response.status, content_type), retries
             except (aiohttp.ClientError, asyncio.TimeoutError):
                 retries += 1
+                self.source_profile["probe_failures"] += 1
                 continue
+        fallback_probe = await asyncio.to_thread(self._probe_via_requests, url, headers, job.timeout_seconds)
+        if fallback_probe is not None:
+            return fallback_probe, retries
         return FileProbe(False, 0, False, 0, ""), retries
 
     async def _download_single(self, session, url, tmp_path, expected_size, headers, proxy, job, video_id):
@@ -301,11 +347,11 @@ class DownloadEngine:
                     self._emit_runtime()
                 return bytes_written, retries
 
-    async def _download_multi_part(self, session, url, final_path, total_size, headers, proxy, job, video_id):
-        part_size = math.ceil(total_size / job.threads)
+    async def _download_multi_part(self, session, url, final_path, total_size, headers, proxy, job, video_id, effective_threads):
+        part_size = math.ceil(total_size / effective_threads)
         part_paths = []
         tasks = []
-        for index in range(job.threads):
+        for index in range(effective_threads):
             start = index * part_size
             end = min(total_size - 1, start + part_size - 1)
             if start > end:
@@ -321,6 +367,7 @@ class DownloadEngine:
         results = await asyncio.gather(*tasks, return_exceptions=True)
         failures = [item for item in results if isinstance(item, Exception)]
         if failures or self.cancel_event.is_set():
+            self.source_profile["range_failures"] += 1
             self._cleanup_paths(part_paths)
             if failures:
                 raise failures[0]
@@ -483,13 +530,30 @@ class DownloadEngine:
         self.storage.record_items(self.result_batch)
         self.storage.update_active_run_ids([video_id for video_id in self.job_ids if video_id in self.remaining_ids])
         self.result_batch.clear()
+        self.last_batch_flush = time.monotonic()
 
     def _emit_runtime(self, force: bool = False):
         now = time.monotonic()
+        if self.result_batch and (now - self.last_batch_flush) >= RESULT_FLUSH_INTERVAL:
+            self._flush_result_batch()
         if not force and (now - self.last_runtime_emit) < RUNTIME_EMIT_INTERVAL:
             return
         self.last_runtime_emit = now
         self.app.emit_event("runtime", asdict(self.stats))
+
+    def _effective_threads(self, job: DownloadJob, probe: FileProbe) -> int:
+        threads = min(self.dynamic_threads, job.threads)
+        if not probe.supports_ranges:
+            threads = 1
+        elif self.source_profile["range_failures"] >= 2:
+            threads = 1
+        elif self.stats.retries >= ADAPT_RETRY_THRESHOLD or self.source_profile["probe_failures"] >= ADAPT_FAILURE_THRESHOLD:
+            threads = min(threads, 2)
+        elif self.source_profile["fallback_successes"] >= 2:
+            threads = 1
+        self.dynamic_threads = max(1, threads)
+        self.stats.current_threads = self.dynamic_threads
+        return self.dynamic_threads
 
     async def _wait_if_paused(self):
         while not self.pause_event.is_set():
@@ -527,6 +591,64 @@ class DownloadEngine:
         else:
             reason = f"manual setup -> {workers} files, {threads} lanes, {chunk_kb} KB blocks"
         return TuningProfile(workers=workers, threads=threads, chunk_kb=chunk_kb, reason=reason)
+
+    def _probe_via_requests(self, url, headers, timeout_seconds):
+        session = requests.Session()
+        session.headers.update(headers)
+        try:
+            for method in ("head", "get"):
+                kwargs = {"timeout": timeout_seconds, "verify": False, "allow_redirects": True}
+                if method == "get":
+                    kwargs["stream"] = True
+                response = getattr(session, method)(url, **kwargs)
+                try:
+                    if response.status_code == 404:
+                        return FileProbe(False, 0, False, response.status_code, response.headers.get("Content-Type", ""))
+                    if response.ok or response.status_code in (401, 403):
+                        size = int(response.headers.get("Content-Length", "0") or 0)
+                        supports_ranges = "bytes" in response.headers.get("Accept-Ranges", "").lower()
+                        content_type = response.headers.get("Content-Type", "")
+                        return FileProbe(True, size, supports_ranges, response.status_code, content_type)
+                finally:
+                    response.close()
+        except requests.RequestException:
+            return None
+        finally:
+            session.close()
+        return None
+
+    def _download_via_requests(self, video_id, url, save_dir, probe, headers, proxy, job):
+        final_path = self._final_path(save_dir, job.base_url, video_id)
+        tmp_path = self._temp_path(save_dir, job.base_url, video_id)
+        session = requests.Session()
+        session.headers.update(headers)
+        proxies = {"http": proxy, "https": proxy} if proxy else None
+        try:
+            with session.get(url, timeout=job.timeout_seconds, verify=False, stream=True, proxies=proxies, allow_redirects=True) as response:
+                if response.status_code >= 400:
+                    return 0
+                bytes_written = 0
+                with open(tmp_path, "wb") as file_obj:
+                    for chunk in response.iter_content(chunk_size=job.chunk_size):
+                        if self.cancel_event.is_set():
+                            return 0
+                        if not chunk:
+                            continue
+                        file_obj.write(chunk)
+                        bytes_written += len(chunk)
+                        self.stats.bytes_downloaded += len(chunk)
+                if job.verify_downloads:
+                    self._validate_download(tmp_path, probe.size, probe.content_type)
+                os.replace(tmp_path, final_path)
+                return bytes_written
+        except (requests.RequestException, OSError, ValueError):
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            return 0
+        finally:
+            session.close()
 
     def _pick_proxy(self):
         now = time.time()
@@ -568,8 +690,9 @@ class DownloadEngine:
                 raise ValueError("missing mp4 header")
 
     def _cleanup_partial_files(self, save_dir, video_id):
-        partials = list(Path(save_dir).glob(f"video_{video_id}.mp4.part*"))
-        partials.append(Path(save_dir) / f"video_{video_id}.mp4.tmp")
+        base_dir = Path(save_dir)
+        partials = list(base_dir.glob(f"*_{video_id}.mp4.part*"))
+        partials.extend(base_dir.glob(f"*_{video_id}.mp4.tmp"))
         self._cleanup_paths(partials)
 
     def _cleanup_paths(self, paths):
@@ -596,3 +719,18 @@ class DownloadEngine:
 
     def _now(self) -> str:
         return datetime.now().isoformat(timespec="seconds")
+
+    def _source_key(self, base_url: str) -> str:
+        parsed = urlparse(base_url)
+        host = (parsed.netloc or "source").lower().replace(".", "_").replace(":", "_")
+        digest = hashlib.sha1(base_url.encode("utf-8")).hexdigest()[:8]
+        return f"{host}_{digest}"
+
+    def _base_filename(self, base_url: str, video_id: int) -> str:
+        return f"video_{self._source_key(base_url)}_{video_id}.mp4"
+
+    def _final_path(self, save_dir: Path | str, base_url: str, video_id: int) -> Path:
+        return Path(save_dir) / self._base_filename(base_url, video_id)
+
+    def _temp_path(self, save_dir: Path | str, base_url: str, video_id: int) -> Path:
+        return Path(save_dir) / f"{self._base_filename(base_url, video_id)}.tmp"
