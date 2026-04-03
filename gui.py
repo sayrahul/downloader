@@ -32,7 +32,9 @@ COLOR_ERROR = "#F43F5E"
 COLOR_WARNING = "#F59E0B"
 COLOR_TEXT_PRIMARY = "#F8FAFC"
 COLOR_TEXT_SECONDARY = "#64748B"
+COLOR_TEXT_MUTED = "#94A3B8"
 COLOR_BORDER = "#1E293B"
+COLOR_SURFACE_ALT = "#162033"
 
 
 class DownloaderApp:
@@ -60,6 +62,7 @@ class DownloaderApp:
         self.txt_preview = ft.Text("Ready", size=12, color=COLOR_TEXT_SECONDARY, text_align=ft.TextAlign.RIGHT)
         self.txt_output = ft.Text(self.output_path, size=12, color=COLOR_TEXT_SECONDARY, selectable=True)
         self.txt_status = ft.Text("SYSTEM READY", size=12, weight=ft.FontWeight.BOLD, color=COLOR_SUCCESS)
+        self.txt_workspace = ft.Text("READY", size=10, weight=ft.FontWeight.BOLD, color=COLOR_SUCCESS)
         self.txt_dup_files = ft.Text("0", size=32, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_PRIMARY)
         self.txt_dup_size_groups = ft.Text("0", size=32, weight=ft.FontWeight.BOLD, color=COLOR_WARNING)
         self.txt_dup_exact_groups = ft.Text("0", size=32, weight=ft.FontWeight.BOLD, color=COLOR_ACCENT)
@@ -146,10 +149,58 @@ class DownloaderApp:
             on_select=handler,
         )
 
+    def _helper_text(self, value):
+        return ft.Text(value, size=11, color=COLOR_TEXT_MUTED)
+
+    def _badge(self, label, color=COLOR_ACCENT, fill=None):
+        return ft.Container(
+            content=ft.Text(label, size=10, weight=ft.FontWeight.BOLD, color=color),
+            padding=ft.padding.symmetric(horizontal=10, vertical=6),
+            border_radius=999,
+            bgcolor=fill or COLOR_SURFACE_ALT,
+            border=ft.Border.all(1, color),
+        )
+
+    def _section_card(self, title, subtitle, content, expand=False):
+        return ft.Container(
+            content=ft.Column(
+                [
+                    ft.Container(height=4, bgcolor=COLOR_ACCENT, border_radius=999),
+                    ft.Text(title, size=20, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_PRIMARY),
+                    ft.Text(subtitle, size=12, color=COLOR_TEXT_MUTED),
+                    ft.Divider(color=COLOR_BORDER, height=16),
+                    content,
+                ],
+                spacing=10,
+                expand=expand,
+            ),
+            bgcolor=COLOR_SURFACE,
+            padding=22,
+            border_radius=18,
+            border=ft.Border.all(1, COLOR_BORDER),
+            expand=expand,
+        )
+
+    def _empty_state(self, icon, title, body):
+        return ft.Container(
+            content=ft.Column(
+                [
+                    ft.Icon(icon, size=42, color=COLOR_TEXT_MUTED),
+                    ft.Text(title, size=18, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_PRIMARY),
+                    ft.Text(body, size=12, color=COLOR_TEXT_MUTED, text_align=ft.TextAlign.CENTER),
+                ],
+                spacing=10,
+                horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                alignment=ft.MainAxisAlignment.CENTER,
+            ),
+            padding=40,
+        )
+
     def _card(self, title, value_ref, icon):
         return ft.Container(
             content=ft.Column(
                 [
+                    ft.Container(height=3, bgcolor=COLOR_ACCENT if title != "FAILED" else COLOR_ERROR, border_radius=999),
                     ft.Row(
                         [ft.Text(title, size=11, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_SECONDARY), ft.Icon(icon, size=18, color=COLOR_TEXT_SECONDARY)],
                         alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
@@ -170,10 +221,46 @@ class DownloaderApp:
         self.rail = ft.NavigationRail(
             selected_index=0,
             label_type=ft.NavigationRailLabelType.ALL,
-            min_width=96,
+            min_width=108,
             min_extended_width=180,
             bgcolor=COLOR_SURFACE,
             indicator_color=COLOR_BORDER,
+            leading=ft.Container(
+                content=ft.Column(
+                    [
+                        ft.Container(
+                            content=ft.Icon(ft.Icons.CLOUD_DOWNLOAD_ROUNDED, size=24, color=COLOR_TEXT_PRIMARY),
+                            width=52,
+                            height=52,
+                            bgcolor=COLOR_SURFACE_ALT,
+                            border_radius=16,
+                            alignment=None,
+                        ),
+                        ft.Text("Downloader", size=14, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_PRIMARY),
+                        ft.Text("Studio Pro", size=11, color=COLOR_TEXT_MUTED),
+                    ],
+                    spacing=8,
+                    horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                ),
+                padding=ft.padding.only(top=18, bottom=10),
+            ),
+            trailing=ft.Container(
+                content=ft.Column(
+                    [
+                        ft.Container(
+                            content=self.txt_workspace,
+                            padding=ft.padding.symmetric(horizontal=10, vertical=6),
+                            border_radius=999,
+                            bgcolor=COLOR_SURFACE_ALT,
+                            border=ft.Border.all(1, COLOR_BORDER),
+                        ),
+                        ft.Text("Workspace", size=10, color=COLOR_TEXT_MUTED),
+                    ],
+                    spacing=8,
+                    horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                ),
+                padding=ft.padding.only(bottom=18),
+            ),
             destinations=[
                 ft.NavigationRailDestination(icon=ft.Icons.DASHBOARD_OUTLINED, selected_icon=ft.Icons.DASHBOARD, label="Dashboard"),
                 ft.NavigationRailDestination(icon=ft.Icons.CONTENT_COPY_OUTLINED, selected_icon=ft.Icons.CONTENT_COPY, label="Duplicates"),
@@ -220,11 +307,13 @@ class DownloaderApp:
             spacing=16,
         )
 
-        left_panel = ft.Container(
-            content=ft.Column(
+        left_panel = self._section_card(
+            "Target Parameters",
+            "Define the template, ID window, and traversal order for the current run.",
+            ft.Column(
                 [
-                    ft.Text("Target Parameters", weight=ft.FontWeight.BOLD, size=18, color=COLOR_TEXT_PRIMARY),
                     self.in_url,
+                    self._helper_text("Use a URL with `{}` or let the app convert a detected numeric ID into a template."),
                     ft.Row(
                         [
                             ft.Container(content=self.in_start, expand=True),
@@ -233,10 +322,20 @@ class DownloaderApp:
                         ],
                         spacing=10,
                     ),
+                    self._helper_text("Start and end control the scan range. Increment controls how many IDs are skipped each step."),
                     ft.Row(
                         [
                             ft.Container(content=self.dropdown_range, width=190),
-                            self.txt_preview,
+                            ft.Container(
+                                content=ft.Row(
+                                    [
+                                        self._badge("Preview", COLOR_TEXT_MUTED, COLOR_SURFACE_ALT),
+                                        self.txt_preview,
+                                    ],
+                                    alignment=ft.MainAxisAlignment.END,
+                                ),
+                                expand=True,
+                            ),
                         ],
                         spacing=10,
                     ),
@@ -249,62 +348,75 @@ class DownloaderApp:
                         on_click=self.detect_sequence_id,
                     ),
                 ],
-                spacing=15,
+                spacing=12,
             ),
-            bgcolor=COLOR_SURFACE,
-            padding=25,
-            border_radius=16,
-            border=ft.Border.all(1, COLOR_BORDER),
-            expand=3,
+            expand=True,
         )
 
-        right_panel = ft.Container(
-            content=ft.Column(
+        right_panel = self._section_card(
+            "Run Control",
+            "Choose a profile, cap oversized files if needed, and launch the current operation.",
+            ft.Column(
                 [
-                    ft.Text("Engine Optimization", weight=ft.FontWeight.BOLD, size=18, color=COLOR_TEXT_PRIMARY),
                     self.dropdown_preset,
                     self.in_size,
-                    self.txt_profile,
+                    ft.Container(
+                        content=ft.Row(
+                            [
+                                self._badge("Profile", COLOR_ACCENT, COLOR_SURFACE_ALT),
+                                ft.Container(content=self.txt_profile, expand=True),
+                            ],
+                            spacing=10,
+                        ),
+                        padding=ft.padding.symmetric(horizontal=12, vertical=10),
+                        border_radius=12,
+                        bgcolor=COLOR_SURFACE_ALT,
+                        border=ft.Border.all(1, COLOR_BORDER),
+                    ),
                     ft.Row([self.start_button, self.pause_button, self.stop_button], spacing=10),
                     ft.TextButton("Set Output Folder", icon=ft.Icons.FOLDER_OPEN, icon_color=COLOR_ACCENT, on_click=self.pick_output_folder),
-                    self.txt_output,
-                    self.txt_status,
+                    ft.Container(
+                        content=ft.Column(
+                            [
+                                ft.Text("Current Output", size=11, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_MUTED),
+                                self.txt_output,
+                            ],
+                            spacing=4,
+                        ),
+                        padding=ft.padding.symmetric(horizontal=12, vertical=10),
+                        border_radius=12,
+                        bgcolor=COLOR_SURFACE_ALT,
+                        border=ft.Border.all(1, COLOR_BORDER),
+                    ),
+                    ft.Container(
+                        content=ft.Row([self._badge("Status", self.txt_status.color, COLOR_SURFACE_ALT), self.txt_status], spacing=10),
+                        padding=ft.padding.symmetric(horizontal=12, vertical=10),
+                        border_radius=12,
+                        bgcolor=COLOR_SURFACE_ALT,
+                        border=ft.Border.all(1, COLOR_BORDER),
+                    ),
                 ],
-                spacing=15,
+                spacing=12,
             ),
-            bgcolor=COLOR_SURFACE,
-            padding=25,
-            border_radius=16,
-            border=ft.Border.all(1, COLOR_BORDER),
-            expand=2,
+            expand=True,
         )
 
-        progress_panel = ft.Container(
-            content=ft.Column(
+        progress_panel = self._section_card(
+            "Progress Monitor",
+            "Live execution status, completion ratio, and estimated time remaining.",
+            ft.Column(
                 [
                     ft.Row([self.txt_progress, self.txt_eta], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
                     self.prog_bar,
                 ],
                 spacing=15,
             ),
-            bgcolor=COLOR_SURFACE,
-            padding=25,
-            border_radius=16,
-            border=ft.Border.all(1, COLOR_BORDER),
         )
 
-        console_panel = ft.Container(
-            content=ft.Column(
-                [
-                    ft.Text("> SYSTEM CONSOLE", size=10, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_SECONDARY),
-                    ft.Container(content=self.console, bgcolor=COLOR_BG, border_radius=10, height=180),
-                ],
-                spacing=12,
-            ),
-            bgcolor=COLOR_SURFACE,
-            padding=15,
-            border_radius=16,
-            border=ft.Border.all(1, COLOR_BORDER),
+        console_panel = self._section_card(
+            "System Console",
+            "Structured runtime notes from scanning, downloads, duplicate review, and storage actions.",
+            ft.Container(content=self.console, bgcolor=COLOR_BG, border_radius=12, height=180, padding=10),
         )
 
         self.content_area.content = ft.Column(
@@ -352,16 +464,15 @@ class DownloaderApp:
             heading_row_color=COLOR_BORDER,
             expand=True,
         )
-        self.history_detail.controls = [
-            ft.Text("Select a run label below to inspect recent stored items.", color=COLOR_TEXT_SECONDARY)
-        ]
+        self.history_detail.controls = [self._empty_state(ft.Icons.RECEIPT_LONG, "Choose a run", "Click a run label to inspect stored item-level results, retry counts, and status notes.")]
         self.content_area.content = ft.Column(
             [
                 ft.Row([ft.Text("Operation History", size=24, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_PRIMARY), ft.IconButton(icon=ft.Icons.REFRESH, on_click=self.refresh_history_view)], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-                ft.Container(
-                    content=ft.Column(
+                self._section_card(
+                    "Run Browser",
+                    "Search past runs, refresh the latest state, and open a run label to inspect the stored item history.",
+                    ft.Column(
                         [
-                            ft.Text("Search past runs, then click a run label below to inspect duplicate-safe results and item history.", size=12, color=COLOR_TEXT_SECONDARY),
                             ft.Row(
                                 [
                                     ft.Container(content=self.history_search, expand=True),
@@ -370,29 +481,22 @@ class DownloaderApp:
                                 ],
                                 spacing=10,
                             ),
-                            ft.Row([table], scroll=ft.ScrollMode.ALWAYS, expand=True),
+                            ft.Container(
+                                content=ft.Row([table], scroll=ft.ScrollMode.ALWAYS, expand=True),
+                                bgcolor=COLOR_BG,
+                                border_radius=12,
+                                padding=10,
+                                height=330,
+                            ),
                         ],
                         spacing=15,
-                        expand=True,
                     ),
-                    bgcolor=COLOR_SURFACE,
-                    padding=20,
-                    border_radius=16,
-                    border=ft.Border.all(1, COLOR_BORDER),
                     expand=True,
                 ),
-                ft.Container(
-                    content=ft.Column(
-                        [
-                            ft.Text("Run Detail", size=18, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_PRIMARY),
-                            ft.Container(content=self.history_detail, bgcolor=COLOR_BG, border_radius=10, height=230, padding=10),
-                        ],
-                        spacing=12,
-                    ),
-                    bgcolor=COLOR_SURFACE,
-                    padding=18,
-                    border_radius=16,
-                    border=ft.Border.all(1, COLOR_BORDER),
+                self._section_card(
+                    "Run Detail",
+                    "A compact item-by-item view of the selected run, including status and retry information.",
+                    ft.Container(content=self.history_detail, bgcolor=COLOR_BG, border_radius=12, height=240, padding=10),
                 ),
             ],
             spacing=20,
@@ -440,44 +544,50 @@ class DownloaderApp:
             spacing=16,
         )
 
-        controls = ft.Container(
-            content=ft.Column(
+        controls = self._section_card(
+            "Duplicate Video Manager",
+            "Find same-size collisions, verify exact duplicates by hash, then move or smart-delete the extra copies with confidence.",
+            ft.Column(
                 [
-                    ft.Text("Duplicate Video Manager", size=22, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_PRIMARY),
-                    ft.Text(
-                        "Scan the current output folder to find same-size files and verify exact duplicates by SHA-256 hash. Exact duplicate copies can be moved into a safe review folder or permanently removed with Smart Delete.",
-                        size=13,
-                        color=COLOR_TEXT_SECONDARY,
+                    ft.Row(
+                        [
+                            self._badge("SHA-256 Verified", COLOR_ACCENT, COLOR_SURFACE_ALT),
+                            self._badge("Safe Review Folder", COLOR_WARNING, COLOR_SURFACE_ALT),
+                            self._badge("Canonical Keep Rule", COLOR_SUCCESS, COLOR_SURFACE_ALT),
+                        ],
+                        spacing=8,
+                        wrap=True,
                     ),
                     ft.Row([self.dup_scan_button, self.dup_move_button, self.dup_delete_button], spacing=12, wrap=True),
-                    ft.Text(f"Current folder: {self.output_path}", size=12, color=COLOR_TEXT_SECONDARY, selectable=True),
-                    self.txt_dup_status,
+                    ft.Container(
+                        content=ft.Column(
+                            [
+                                ft.Text("Current Folder", size=11, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_MUTED),
+                                ft.Text(f"{self.output_path}", size=12, color=COLOR_TEXT_SECONDARY, selectable=True),
+                            ],
+                            spacing=4,
+                        ),
+                        bgcolor=COLOR_SURFACE_ALT,
+                        border_radius=12,
+                        border=ft.Border.all(1, COLOR_BORDER),
+                        padding=12,
+                    ),
+                    ft.Container(
+                        content=ft.Row([self._badge("Scanner", self.txt_dup_status.color, COLOR_SURFACE_ALT), ft.Container(content=self.txt_dup_status, expand=True)], spacing=10),
+                        bgcolor=COLOR_SURFACE_ALT,
+                        border_radius=12,
+                        border=ft.Border.all(1, COLOR_BORDER),
+                        padding=12,
+                    ),
                 ],
                 spacing=14,
             ),
-            bgcolor=COLOR_SURFACE,
-            padding=24,
-            border_radius=16,
-            border=ft.Border.all(1, COLOR_BORDER),
         )
 
-        results = ft.Container(
-            content=ft.Column(
-                [
-                    ft.Text("Review Queue", size=18, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_PRIMARY),
-                    ft.Text(
-                        "Groups show one kept file and the extra copies that can be removed or moved.",
-                        size=12,
-                        color=COLOR_TEXT_SECONDARY,
-                    ),
-                    ft.Container(content=self.dup_list, bgcolor=COLOR_BG, border_radius=10, height=420, padding=10),
-                ],
-                spacing=12,
-            ),
-            bgcolor=COLOR_SURFACE,
-            padding=18,
-            border_radius=16,
-            border=ft.Border.all(1, COLOR_BORDER),
+        results = self._section_card(
+            "Review Queue",
+            "Each group shows the kept canonical file and the extra exact copies that can be removed or archived.",
+            ft.Container(content=self.dup_list, bgcolor=COLOR_BG, border_radius=12, height=420, padding=10),
         )
 
         self.content_area.content = ft.Column(
@@ -515,17 +625,35 @@ class DownloaderApp:
             f"Timeout: {self.settings.timeout_seconds} sec",
             f"Auto tune: {self.settings.auto_tune}",
         ]
-        self.content_area.content = ft.Container(
-            content=ft.Column(
-                [
-                    ft.Text("Settings Snapshot", size=24, weight=ft.FontWeight.BOLD, color=COLOR_TEXT_PRIMARY),
-                    ft.Text("Save the current dashboard form as defaults or reload the last saved configuration.", size=12, color=COLOR_TEXT_SECONDARY),
-                    ft.Row([self.settings_save_button, self.settings_reset_button], spacing=12),
-                    ft.Container(content=ft.Column([ft.Text(line, color=COLOR_TEXT_PRIMARY, size=14) for line in lines], spacing=12), bgcolor=COLOR_SURFACE, padding=24, border_radius=16, border=ft.Border.all(1, COLOR_BORDER)),
-                ],
-                spacing=20,
-                expand=True,
-            ),
+        self.content_area.content = ft.Column(
+            [
+                self._section_card(
+                    "Settings Snapshot",
+                    "Save the current dashboard form as defaults or reload the last saved configuration for the next run.",
+                    ft.Column(
+                        [
+                            ft.Row([self.settings_save_button, self.settings_reset_button], spacing=12, wrap=True),
+                            ft.Row(
+                                [
+                                    self._badge("Downloader Defaults", COLOR_ACCENT, COLOR_SURFACE_ALT),
+                                    self._badge("Local Storage", COLOR_SUCCESS, COLOR_SURFACE_ALT),
+                                    self._badge("No Runtime Change", COLOR_WARNING, COLOR_SURFACE_ALT),
+                                ],
+                                spacing=8,
+                                wrap=True,
+                            ),
+                            ft.Container(
+                                content=ft.Column([ft.Text(line, color=COLOR_TEXT_PRIMARY, size=14) for line in lines], spacing=12),
+                                bgcolor=COLOR_BG,
+                                padding=18,
+                                border_radius=12,
+                                border=ft.Border.all(1, COLOR_BORDER),
+                            ),
+                        ],
+                        spacing=16,
+                    ),
+                ),
+            ],
             expand=True,
         )
         self._safe_update()
@@ -672,7 +800,7 @@ class DownloaderApp:
         )
         if not rows:
             self.history_detail.controls.append(
-                ft.Text("No stored item details yet.", color=COLOR_TEXT_SECONDARY)
+                self._empty_state(ft.Icons.INVENTORY_2_OUTLINED, "No item detail yet", "This run exists in history, but there are no stored item rows available to show yet.")
             )
             self._safe_update()
             return
@@ -686,6 +814,14 @@ class DownloaderApp:
                                 size=12,
                                 weight=ft.FontWeight.BOLD,
                                 color=COLOR_TEXT_PRIMARY,
+                            ),
+                            ft.Row(
+                                [
+                                    self._badge(str(row["result"]).upper(), COLOR_SUCCESS if row["result"] == "success" else COLOR_WARNING if row["result"] == "skipped" else COLOR_ERROR, COLOR_SURFACE_ALT),
+                                    self._badge(f"HTTP {row['http_status']}", COLOR_TEXT_MUTED, COLOR_SURFACE_ALT),
+                                ],
+                                spacing=8,
+                                wrap=True,
                             ),
                             ft.Text(
                                 f"Status: {row['status']} | size={row['size_mb']} | http={row['http_status']}",
@@ -903,7 +1039,7 @@ class DownloaderApp:
         exact_groups = self.dup_results.get("exact_groups", [])
         if not exact_groups:
             self.dup_list.controls.append(
-                ft.Text("No exact duplicate videos found in the current output folder.", color=COLOR_TEXT_SECONDARY)
+                self._empty_state(ft.Icons.VERIFIED_OUTLINED, "No exact duplicates found", "The current output folder does not contain any hash-verified duplicate video copies.")
             )
             return
         for index, group in enumerate(exact_groups[:50], start=1):
@@ -914,6 +1050,13 @@ class DownloaderApp:
                     content=ft.Column(
                         [
                             ft.Text(f"Group {index}: {dup_count} removable copies | {size_mb:.2f} MB", weight=ft.FontWeight.BOLD, color=COLOR_TEXT_PRIMARY),
+                            ft.Row(
+                                [
+                                    self._badge("HASH VERIFIED", COLOR_ACCENT, COLOR_SURFACE_ALT),
+                                    self._badge(f"{dup_count} EXTRAS", COLOR_ERROR, COLOR_SURFACE_ALT),
+                                ],
+                                spacing=8,
+                            ),
                             ft.Text(f"Keep: {group['keep']}", size=12, color=COLOR_SUCCESS, selectable=True),
                             ft.Text("Duplicates:", size=12, color=COLOR_WARNING),
                             ft.Column(
@@ -1103,6 +1246,8 @@ class DownloaderApp:
             self.pause_button.icon = ft.Icons.PLAY_ARROW if self.is_paused else ft.Icons.PAUSE
         if self.stop_button is not None:
             self.stop_button.disabled = not self.is_running
+        self.txt_workspace.value = "PAUSED" if self.is_paused else "ACTIVE" if self.is_running else "READY"
+        self.txt_workspace.color = COLOR_WARNING if self.is_paused else COLOR_ACCENT if self.is_running else COLOR_SUCCESS
 
     def set_status(self, message, color):
         self.txt_status.value = message
